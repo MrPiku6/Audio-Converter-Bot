@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: audio-converter-bot
+    env: python
+    buildCommand: |-
+      pip install --upgrade pip
+      pip install -r requirements.txt
+      apt-get update && apt-get install -y ffmpeg
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
