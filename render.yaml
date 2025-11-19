@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: audio-converter-bot
+    env: docker
+    plan: free
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: PORT
+        value: 8080
