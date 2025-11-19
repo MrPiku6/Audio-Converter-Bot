@@ -1,4 +1,0 @@
-python-telegram-bot==20.7
-pydub==0.25.1
-flask==3.0.0
-gunicorn==21.2.0
