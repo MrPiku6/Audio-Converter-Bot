@@ -57,13 +57,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Volume Normalization\n"
         "• Audio Compression\n\n"
         "*How to use:*\n"
-        "1. Send an audio file\n"
-        "2. Configure all settings in one go\n"
+        "1. Send an audio file - menu will open automatically\n"
+        "2. Configure all settings\n"
         "3. Get your processed file\n\n"
-        "*Commands:*\n"
-        "/start - Start the bot\n"
-        "/help - Show help guide\n"
-        "/settings - Configure audio processing"
+        "*Quick Commands (after sending audio):*\n"
+        "/convert - Change format only\n"
+        "/bitrate - Change bitrate only\n"
+        "/trim - Trim audio only\n"
+        "/settings - Full configuration\n\n"
+        "Just send an audio file to start!"
     )
     await update.message.reply_text(welcome_msg, parse_mode='Markdown')
 
@@ -76,18 +78,19 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Trim AND normalize volume\n"
         "• Compress AND change format\n"
         "• Any combination you want!\n\n"
-        "*Step-by-Step Process:*\n"
-        "1. Send audio file\n"
-        "2. Use /settings to configure\n"
-        "3. Set output format\n"
-        "4. Set bitrate\n"
-        "5. Set trim times (optional)\n"
-        "6. Choose normalization (optional)\n"
-        "7. Choose compression (optional)\n"
-        "8. Process and download\n\n"
+        "*Simple Process:*\n"
+        "1. Send audio file (menu opens automatically)\n"
+        "2. Choose your settings\n"
+        "3. Click PROCESS NOW\n"
+        "4. Download processed file\n\n"
+        "*Quick Commands:*\n"
+        "After sending audio, use:\n"
+        "/convert - Quick format change\n"
+        "/bitrate - Quick bitrate change\n"
+        "/trim - Quick trim setup\n"
+        "/settings - Full settings\n\n"
         "*Limits:*\n"
         "• Max file size: 20MB\n"
-        "• Max trim duration: 10 minutes\n"
         "• Supported: MP3, WAV, OGG, M4A, FLAC, AAC"
     )
     await update.message.reply_text(help_text, parse_mode='Markdown')
@@ -103,37 +106,74 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    await show_settings_menu(update.message)
+    await show_main_menu(update.message)
 
-async def show_settings_menu(message):
-    """Show main settings menu"""
-    keyboard = [
-        [InlineKeyboardButton("🎵 Output Format", callback_data="set_format")],
-        [InlineKeyboardButton("⚡ Bitrate", callback_data="set_bitrate")],
-        [InlineKeyboardButton("✂️ Trim Settings", callback_data="set_trim")],
-        [InlineKeyboardButton("🔊 Normalization", callback_data="toggle_normalize")],
-        [InlineKeyboardButton("📊 Compression", callback_data="toggle_compress")],
-        [InlineKeyboardButton("🚀 PROCESS NOW", callback_data="process_now")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+async def quick_convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Quick format conversion"""
+    user_id = update.message.from_user.id
+    if user_id not in user_sessions or 'input_file' not in user_sessions[user_id]:
+        await update.message.reply_text("❌ Please send an audio file first.")
+        return
     
-    user_id = message.from_user.id
-    session = user_sessions.get(user_id, {})
+    # Set default settings for quick convert
+    user_sessions[user_id].update({
+        'bitrate': '192',
+        'trim_start': 0,
+        'trim_end': None,
+        'normalize': False,
+        'compress': False
+    })
     
-    settings_text = (
-        "⚙️ *Audio Processing Settings*\n\n"
-        f"• Format: `{session.get('format', 'Original')}`\n"
-        f"• Bitrate: `{session.get('bitrate', 'Original')}`\n"
-        f"• Trim: `{session.get('trim_start', 0)}s - {session.get('trim_end', 'End')}`\n"
-        f"• Normalize: `{'✅ ON' if session.get('normalize', False) else '❌ OFF'}`\n"
-        f"• Compress: `{'✅ ON' if session.get('compress', False) else '❌ OFF'}`\n\n"
-        "Configure each setting, then click PROCESS NOW!"
+    await show_format_selection(update.message)
+
+async def quick_bitrate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Quick bitrate change"""
+    user_id = update.message.from_user.id
+    if user_id not in user_sessions or 'input_file' not in user_sessions[user_id]:
+        await update.message.reply_text("❌ Please send an audio file first.")
+        return
+    
+    # Set default settings for quick bitrate change
+    user_sessions[user_id].update({
+        'format': 'mp3',
+        'trim_start': 0,
+        'trim_end': None,
+        'normalize': False,
+        'compress': False
+    })
+    
+    await show_bitrate_selection(update.message)
+
+async def quick_trim(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Quick trim setup"""
+    user_id = update.message.from_user.id
+    if user_id not in user_sessions or 'input_file' not in user_sessions[user_id]:
+        await update.message.reply_text("❌ Please send an audio file first.")
+        return
+    
+    # Set default settings for quick trim
+    user_sessions[user_id].update({
+        'format': 'mp3',
+        'bitrate': '192',
+        'normalize': False,
+        'compress': False
+    })
+    
+    await update.message.reply_text(
+        "✂️ *Quick Trim Setup*\n\n"
+        "Send start and end times in seconds:\n"
+        "Format: `start_time end_time`\n\n"
+        "*Examples:*\n"
+        "• `0 60` - First 60 seconds\n"
+        "• `30 90` - From 30s to 90s\n"
+        "• `0 0` - No trimming\n\n"
+        "Enter times now:",
+        parse_mode='Markdown'
     )
-    
-    await message.reply_text(settings_text, parse_mode='Markdown', reply_markup=reply_markup)
+    user_sessions[user_id]['waiting_for_trim'] = True
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Audio file handler"""
+    """Audio file handler - AUTO MENU SHOWS HERE"""
     message = update.message
     user_id = message.from_user.id
     
@@ -176,19 +216,49 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'compress': False
         }
         
-        await status_msg.edit_text(
-            "✅ File downloaded successfully!\n\n"
-            "Use /settings to configure processing options, or use quick commands:\n\n"
-            "• /convert - Quick format conversion\n"
-            "• /bitrate - Change bitrate only\n"
-            "• /trim - Trim audio only"
-        )
+        # AUTO SHOW MENU AFTER DOWNLOAD
+        await show_main_menu(status_msg)
         
     except Exception as e:
         logger.error(f"Download error: {e}")
         await status_msg.edit_text(f"❌ Error: {str(e)}")
         if 'input_path' in locals() and os.path.exists(input_path):
             os.remove(input_path)
+
+async def show_main_menu(message):
+    """Show main processing menu - AUTO CALLED AFTER AUDIO UPLOAD"""
+    keyboard = [
+        [InlineKeyboardButton("🎵 Output Format", callback_data="set_format")],
+        [InlineKeyboardButton("⚡ Bitrate", callback_data="set_bitrate")],
+        [InlineKeyboardButton("✂️ Trim Audio", callback_data="set_trim")],
+        [InlineKeyboardButton("🔊 Normalization", callback_data="toggle_normalize")],
+        [InlineKeyboardButton("📊 Compression", callback_data="toggle_compress")],
+        [InlineKeyboardButton("🚀 PROCESS NOW", callback_data="process_now")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    user_id = message.from_user.id
+    session = user_sessions.get(user_id, {})
+    
+    # Get current settings display
+    trim_display = f"{session.get('trim_start', 0)}s - {session.get('trim_end', 'End')}s" if session.get('trim_start', 0) > 0 or session.get('trim_end') else "No trim"
+    
+    settings_text = (
+        "🎵 *Audio Processing Menu*\n\n"
+        "*Current Settings:*\n"
+        f"• Format: `{session.get('format', 'mp3').upper()}`\n"
+        f"• Bitrate: `{session.get('bitrate', '192')}kbps`\n"
+        f"• Trim: `{trim_display}`\n"
+        f"• Normalize: `{'✅ ON' if session.get('normalize', False) else '❌ OFF'}`\n"
+        f"• Compress: `{'✅ ON' if session.get('compress', False) else '❌ OFF'}`\n\n"
+        "Configure each setting, then click **PROCESS NOW**!\n\n"
+        "*Quick commands:* /convert, /bitrate, /trim"
+    )
+    
+    if hasattr(message, 'edit_text'):
+        await message.edit_text(settings_text, parse_mode='Markdown', reply_markup=reply_markup)
+    else:
+        await message.reply_text(settings_text, parse_mode='Markdown', reply_markup=reply_markup)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Main callback handler"""
@@ -215,7 +285,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• `0 60` - First 60 seconds\n"
             "• `30 90` - From 30s to 90s\n"
             "• `0 0` - No trimming (full audio)\n\n"
-            "Format: `start_time end_time`",
+            "Format: `start_time end_time`\n\n"
+            "Enter times now:",
             parse_mode='Markdown'
         )
         user_sessions[user_id]['waiting_for_trim'] = True
@@ -223,28 +294,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         selected_format = data.replace("format_", "")
         user_sessions[user_id]['format'] = selected_format
         await query.edit_message_text(f"✅ Output format set to: {selected_format.upper()}")
-        await show_settings_menu(query.message)
+        await show_main_menu(query.message)
     elif data.startswith("bitrate_"):
         selected_bitrate = data.replace("bitrate_", "")
         user_sessions[user_id]['bitrate'] = selected_bitrate
         await query.edit_message_text(f"✅ Bitrate set to: {selected_bitrate}kbps")
-        await show_settings_menu(query.message)
+        await show_main_menu(query.message)
     elif data == "toggle_normalize":
         current = user_sessions[user_id].get('normalize', False)
         user_sessions[user_id]['normalize'] = not current
         status = "ON" if not current else "OFF"
         await query.edit_message_text(f"✅ Volume normalization: {status}")
-        await show_settings_menu(query.message)
+        await show_main_menu(query.message)
     elif data == "toggle_compress":
         current = user_sessions[user_id].get('compress', False)
         user_sessions[user_id]['compress'] = not current
         status = "ON" if not current else "OFF"
         await query.edit_message_text(f"✅ Compression: {status}")
-        await show_settings_menu(query.message)
+        await show_main_menu(query.message)
     elif data == "process_now":
         await process_audio(query)
+    elif data == "back_to_menu":
+        await show_main_menu(query.message)
 
-async def show_format_selection(query):
+async def show_format_selection(message):
     """Show format selection"""
     keyboard = []
     row = []
@@ -255,12 +328,16 @@ async def show_format_selection(query):
             row = []
     if row:
         keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_settings")])
+    keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("🎯 Select output format:", reply_markup=reply_markup)
+    
+    if hasattr(message, 'edit_message_text'):
+        await message.edit_message_text("🎯 Select output format:", reply_markup=reply_markup)
+    else:
+        await message.reply_text("🎯 Select output format:", reply_markup=reply_markup)
 
-async def show_bitrate_selection(query):
+async def show_bitrate_selection(message):
     """Show bitrate selection"""
     keyboard = []
     row = []
@@ -271,10 +348,14 @@ async def show_bitrate_selection(query):
             row = []
     if row:
         keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_settings")])
+    keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("⚡ Select bitrate:", reply_markup=reply_markup)
+    
+    if hasattr(message, 'edit_message_text'):
+        await message.edit_message_text("⚡ Select bitrate:", reply_markup=reply_markup)
+    else:
+        await message.reply_text("⚡ Select bitrate:", reply_markup=reply_markup)
 
 async def process_audio(query):
     """Process audio with all selected settings"""
@@ -306,15 +387,22 @@ async def process_audio(query):
         # Determine output format and bitrate
         output_format = session.get('format', 'mp3')
         
-        # Adjust bitrate for compression
+        # Adjust bitrate for compression - FIXED BITRATE ISSUE
         if session.get('compress'):
-            bitrate = "128k"  # Lower bitrate for compression
+            # For compression, use lower bitrate but respect user's choice if it's already low
+            current_bitrate = int(session.get('bitrate', '192'))
+            if current_bitrate > 128:
+                bitrate = "128k"
+            else:
+                bitrate = f"{current_bitrate}k"
         else:
+            # Use user's selected bitrate
             bitrate = f"{session.get('bitrate', '192')}k"
         
         # Create output filename
         base_name = os.path.splitext(session['original_name'])[0]
         features = []
+        
         if session.get('trim_start', 0) > 0 or session.get('trim_end'):
             features.append("trimmed")
         if session.get('normalize'):
@@ -329,7 +417,7 @@ async def process_audio(query):
         
         output_file = os.path.join(TEMP_DIR, f"{user_id}_{base_name}{feature_suffix}.{output_format}")
         
-        # Export with selected settings
+        # Export with selected settings - BITRATE NOW WORKS PROPERLY
         audio.export(output_file, format=output_format, bitrate=bitrate)
         
         # Prepare caption with processing details
@@ -340,7 +428,8 @@ async def process_audio(query):
         )
         
         if session.get('trim_start', 0) > 0 or session.get('trim_end'):
-            caption += f"• Trim: {session['trim_start']}s - {session['trim_end'] or 'End'}s\n"
+            trim_end_display = session['trim_end'] if session['trim_end'] else 'End'
+            caption += f"• Trim: {session['trim_start']}s - {trim_end_display}s\n"
         if session.get('normalize'):
             caption += "• Volume: Normalized\n"
         if session.get('compress'):
@@ -396,46 +485,13 @@ async def handle_trim_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             await update.message.reply_text(f"✅ Trim set: {start_time}s to {end_time}s")
         
-        await show_settings_menu(update.message)
+        await show_main_menu(update.message)
         
     except ValueError:
         await update.message.reply_text("❌ Invalid numbers. Please enter valid seconds.")
     except Exception as e:
         logger.error(f"Trim settings error: {e}")
         await update.message.reply_text(f"❌ Error: {str(e)}")
-
-# Quick command handlers for individual features
-async def quick_convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Quick format conversion"""
-    user_id = update.message.from_user.id
-    if user_id not in user_sessions or 'input_file' not in user_sessions[user_id]:
-        await update.message.reply_text("❌ Please send an audio file first.")
-        return
-    await show_format_selection(update.message)
-
-async def quick_bitrate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Quick bitrate change"""
-    user_id = update.message.from_user.id
-    if user_id not in user_sessions or 'input_file' not in user_sessions[user_id]:
-        await update.message.reply_text("❌ Please send an audio file first.")
-        return
-    await show_bitrate_selection(update.message)
-
-async def quick_trim(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Quick trim setup"""
-    user_id = update.message.from_user.id
-    if user_id not in user_sessions or 'input_file' not in user_sessions[user_id]:
-        await update.message.reply_text("❌ Please send an audio file first.")
-        return
-    
-    await update.message.reply_text(
-        "✂️ *Quick Trim Setup*\n\n"
-        "Send start and end times in seconds:\n"
-        "Format: `start_time end_time`\n\n"
-        "Example: `0 60` for first 60 seconds",
-        parse_mode='Markdown'
-    )
-    user_sessions[user_id]['waiting_for_trim'] = True
 
 def cleanup_files(*files):
     """Cleanup temporary files"""
