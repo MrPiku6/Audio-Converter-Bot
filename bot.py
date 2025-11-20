@@ -8,6 +8,7 @@ import requests
 from threading import Thread
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
+from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 # --- FLASK KEEP-ALIVE SERVER ---
@@ -22,29 +23,21 @@ def run_flask():
     app.run(host='0.0.0.0', port=port)
 
 def self_ping():
-    """Khud ko ping karega taaki bot sleep na kare"""
     while True:
         try:
-            port = os.environ.get("PORT", 8080)
-            # Render URL mil jaye to best hai, nahi to localhost
             render_url = os.environ.get("RENDER_EXTERNAL_URL") 
             if render_url:
                 requests.get(render_url)
-                logger.info(f"Pinged self at {render_url}")
             else:
-                requests.get(f"http://127.0.0.1:{port}")
-                logger.info("Pinged localhost")
-        except Exception as e:
-            logger.error(f"Ping Error: {e}")
-        time.sleep(600) # Har 10 minute mein ping
+                requests.get(f"http://127.0.0.1:{os.environ.get('PORT', 8080)}")
+        except:
+            pass
+        time.sleep(600) 
 
 def start_keep_alive():
-    # Flask Server Thread
     t1 = Thread(target=run_flask)
     t1.daemon = True
     t1.start()
-    
-    # Self Ping Thread
     t2 = Thread(target=self_ping)
     t2.daemon = True
     t2.start()
@@ -54,8 +47,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-# Force Sub Variable
-FORCE_SUB_CHANNEL = os.getenv("@DARK_RIFT_ZONE") 
+FORCE_SUB_CHANNEL = os.getenv("FORCE_SUB_CHANNEL") 
 
 TEMP_DIR = "temp_audio"
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -67,10 +59,9 @@ user_sessions = {}
 
 # --- HELPER FUNCTIONS ---
 
-async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Check if user is subscribed to the channel"""
+async def is_subscribed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Checks if the user is a member of the force subscribe channel."""
     if not FORCE_SUB_CHANNEL or FORCE_SUB_CHANNEL.strip() == "":
-        # Agar channel set nahi hai to allow karo
         return True
     
     user_id = update.effective_user.id
@@ -82,40 +73,47 @@ async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return False
         return True
     except Exception as e:
-        logger.error(f"Force Sub Error: {e}")
-        # IMPORTANT: Agar bot admin nahi hai to error aayega.
-        # Agar aap chahte hain user bina join kiye use na kare, to return False karein.
+        logger.error(f"Subscription Check Error: {e}")
+        # If bot is not admin, inform the user (failsafe)
         if "Chat not found" in str(e) or "bot is not a member" in str(e):
-            await context.bot.send_message(chat_id=user_id, text="❌ **Error:** Bot channel ka Admin nahi hai.\nAdmin ko boliye mujhe channel me add karein aur Admin banayein.")
-            return False
-        return False # Strict Mode: Error aaya to bhi block karo
+            await context.bot.send_message(
+                chat_id=user_id, 
+                text="⚠️ **Admin Configuration Error:**\nThe bot is not an admin in the Force Subscribe channel.\nPlease contact the bot owner to fix this."
+            )
+            # Allow access if configuration is broken to prevent bot from being useless
+            return True 
+        return False
 
-async def send_force_sub_message(update: Update):
+async def send_join_message(update: Update):
+    """Sends the message forcing the user to join."""
     channel_name = FORCE_SUB_CHANNEL.replace('@', '')
-    # Universal Link format
-    join_link = f"https://t.me/{channel_name}"
+    link = f"https://t.me/{channel_name}"
     
     keyboard = [
-        [InlineKeyboardButton("📢 Join Channel", url=join_link)],
-        [InlineKeyboardButton("✅ I have Joined", callback_data="check_sub")]
+        [InlineKeyboardButton("📢 Join Channel", url=link)],
+        [InlineKeyboardButton("✅ I have Joined", callback_data="check_sub_status")]
     ]
-    msg = f"🔒 *Access Denied!*\n\nBot use karne ke liye hamara channel join karein: @{channel_name}\nJoin karke 'I have Joined' par click karein."
-    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    msg_text = (
+        "🔒 **Access Denied!**\n\n"
+        f"To use this bot, you must join our update channel: @{channel_name}\n\n"
+        "1️⃣ Click 'Join Channel'\n"
+        "2️⃣ Join the channel\n"
+        "3️⃣ Come back and click 'I have Joined'"
+    )
+
     if update.message:
-        await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text(msg_text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
     elif update.callback_query:
-        # Try editing, if fails, send new
+        # If user clicks button without joining, simply alert them or refresh the message
         try:
-            await update.callback_query.edit_message_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            await update.callback_query.edit_message_text(msg_text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
         except:
-             await update.callback_query.message.reply_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+            pass
 
 def get_duration(file_path):
     try:
-        cmd = [
-            "ffprobe", "-v", "error", "-show_entries", 
-            "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path
-        ]
+        cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         return float(result.stdout.strip())
     except:
@@ -123,38 +121,61 @@ def get_duration(file_path):
 
 def extract_thumbnail(video_path, output_thumb):
     try:
-        cmd = [
-            "ffmpeg", "-i", video_path, "-ss", "00:00:01", 
-            "-vframes", "1", output_thumb, "-y"
-        ]
+        cmd = ["ffmpeg", "-i", video_path, "-ss", "00:00:01", "-vframes", "1", output_thumb, "-y"]
         subprocess.run(cmd, check=True)
         return output_thumb
     except:
         return None
 
-# --- BOT HANDLERS ---
+# --- HANDLERS ---
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_subscription(update, context):
-        await send_force_sub_message(update)
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_subscribed(update, context):
+        await send_join_message(update)
         return
 
     welcome_msg = (
-        "🎵 *Ultimate Audio Studio* 🎵\n\n"
-        "Main aapki audio files ko convert, edit aur compress kar sakta hoon!\n\n"
-        "🚀 *Features:*\n"
-        "• 📹 Video se Audio (MP3/M4A)\n"
-        "• 📉 Smart Compression\n"
-        "• 🎧 8D Audio Effect\n"
-        "• 🔊 Bass Boost\n"
-        "• ✂️ Easy Trimming\n\n"
-        "👉 *Shuru karne ke liye mujhe koi File bhejein!*"
+        "🎵 **Welcome to Audio Studio Bot!** 🎵\n\n"
+        "I can convert, compress, and edit your audio/video files.\n\n"
+        "🔹 **How to use:**\n"
+        "Simply send me an **Audio** or **Video** file to begin!\n\n"
+        "🔹 **Features:**\n"
+        "• Convert Video to Audio\n"
+        "• Change Format (MP3, M4A, FLAC, etc.)\n"
+        "• Bass Boost & 8D Audio\n"
+        "• Trim/Cut Audio\n"
+        "• Compress File Size\n\n"
+        "Type /help for more details."
     )
-    await update.message.reply_text(welcome_msg, parse_mode='Markdown')
+    await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN)
 
-async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_subscription(update, context):
-        await send_force_sub_message(update)
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_subscribed(update, context):
+        await send_join_message(update)
+        return
+
+    help_text = (
+        "📚 **Bot Help & Guide**\n\n"
+        "**1. Basic Conversion:**\n"
+        "Send any Audio or Video file. A menu will appear allowing you to choose format, bitrate, or effects.\n\n"
+        "**2. Trimming (Cutting) Audio:**\n"
+        "• Send a file.\n"
+        "• Click '✂️ Trim' in the menu.\n"
+        "• Send the start and end time in seconds (e.g., `10 60` to keep audio from 10s to 60s).\n\n"
+        "**3. Effects:**\n"
+        "• **Bass Boost:** Adds deep bass.\n"
+        "• **8D Audio:** Creates a rotating sound effect (use headphones).\n"
+        "• **Normalize:** Balances the volume levels.\n\n"
+        "**4. Compression:**\n"
+        "Click '📉 Compress' to quickly reduce file size (Convert to AAC 64kbps).\n\n"
+        "**5. Issues?**\n"
+        "If the bot stops, just type /start again."
+    )
+    await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_subscribed(update, context):
+        await send_join_message(update)
         return
 
     message = update.message
@@ -175,24 +196,25 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_obj = message.document
         file_name = file_obj.file_name
         if not file_name: return
-        if file_name.lower().endswith(('.mp4', '.mkv', '.avi', '.webm')):
+        # Filter for media types
+        if file_name.lower().endswith(('.mp4', '.mkv', '.avi', '.webm', '.mov')):
             is_video = True
         elif not any(file_name.lower().endswith(f'.{fmt}') for fmt in AUDIO_FORMATS.keys()):
-            await message.reply_text("❌ Unsupported file format.")
+            await message.reply_text("❌ **Unsupported Format.**\nPlease send an Audio or Video file.")
             return
     else:
         return
     
-    if file_obj.file_size > 100 * 1024 * 1024: 
-        await message.reply_text("❌ File too large! Max 100MB allowed.")
+    # 200MB Limit for standard bot API
+    if file_obj.file_size > 200 * 1024 * 1024: 
+        await message.reply_text("❌ **File too large!**\nMaximum size allowed is 200MB.")
         return
 
-    status_msg = await message.reply_text("⏳ Downloading media...")
+    status_msg = await message.reply_text("⏳ **Downloading...** Please wait.")
     
     try:
         new_file = await context.bot.get_file(file_obj.file_id)
         unique_id = f"{user_id}_{int(time.time())}"
-        
         ext = os.path.splitext(file_name)[1]
         input_path = os.path.join(TEMP_DIR, f"{unique_id}_input{ext}")
         
@@ -220,16 +242,14 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Download Error: {e}")
-        await status_msg.edit_text("❌ Download failed.")
+        await status_msg.edit_text("❌ **Download Failed.** Please try again.")
 
 async def show_main_menu(message):
     user_id = message.chat.id if hasattr(message, 'chat') else message.from_user.id
     session = user_sessions.get(user_id, {})
     
     if not session:
-        text = "❌ Session expired. Upload again."
-        if hasattr(message, 'edit_text'): await message.edit_text(text)
-        else: await message.reply_text(text)
+        await message.edit_text("❌ **Session Expired.**\nPlease upload the file again.")
         return
 
     type_text = "📹 Video" if session.get('is_video') else "🎵 Audio"
@@ -240,10 +260,10 @@ async def show_main_menu(message):
     eightd_icon = '✅' if session.get('8d_audio') else '❌'
     
     text = (
-        f"{type_text} *Control Panel*\n"
-        f"File: `{session.get('original_name')}`\n"
-        f"Length: `{int(dur)}s`\n\n"
-        "⚙️ *Current Settings:*\n"
+        f"{type_text} **Control Panel**\n"
+        f"📂 File: `{session.get('original_name')}`\n"
+        f"⏱ Duration: `{int(dur)}s`\n\n"
+        "⚙️ **Current Settings:**\n"
         f"• Format: `{session.get('format', 'mp3').upper()}` | {session.get('bitrate')}kbps\n"
         f"• Effects: Bass: {bass_icon} | Norm: {norm_icon} | 8D: {eightd_icon}\n"
         f"• Speed: `{session.get('speed', 1.0)}x`\n"
@@ -272,32 +292,32 @@ async def show_main_menu(message):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     if hasattr(message, 'edit_text'):
-        try:
-            await message.edit_text(text, parse_mode='Markdown', reply_markup=reply_markup)
-        except:
-            await message.reply_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+        await message.edit_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
     else:
-        await message.reply_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+        await message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    
-    # Special handler for check_sub to avoid answering prematurely
-    if query.data == "check_sub":
-        is_sub = await check_subscription(update, context)
-        if is_sub:
-            await query.answer("✅ Verified! File bhejein.")
-            await query.edit_message_text("✅ *Verified!*\n\nAb aap bot use kar sakte hain. Koi bhi Audio/Video file bhejein!", parse_mode='Markdown')
-        else:
-            await query.answer("❌ Aapne abhi tak channel join nahi kiya!", show_alert=True)
-        return
-
-    await query.answer()
     user_id = query.from_user.id
     data = query.data
+
+    # --- FORCE SUB HANDLER ---
+    if data == "check_sub_status":
+        if await is_subscribed(update, context):
+            await query.answer("✅ Verified!")
+            await query.edit_message_text(
+                "✅ **Access Granted!**\n\nYou can now use the bot.\nSend a file or type /help.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await query.answer("❌ You haven't joined yet!", show_alert=True)
+        return
+    # -------------------------
+
+    await query.answer()
     
     if user_id not in user_sessions:
-        await query.edit_message_text("❌ Session expired. Please upload file again.")
+        await query.edit_message_text("❌ **Session Expired.**\nPlease upload the file again.")
         return
 
     session = user_sessions[user_id]
@@ -316,7 +336,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session['format'] = 'aac' 
         session['bitrate'] = '64'
         session['normalize'] = True 
-        await query.answer("✅ Compression Preset Applied!", show_alert=True)
+        await query.answer("✅ Compression Preset Applied!")
         await show_main_menu(query.message)
         
     elif data == "menu_format":
@@ -339,15 +359,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session['waiting_for_trim'] = True
         dur = int(session.get('duration', 0))
         msg = (
-            f"✂️ *Trim Mode*\n"
+            f"✂️ **Trim Mode**\n"
             f"Total Duration: {dur} seconds.\n\n"
-            "👇 *Start aur End time seconds mein likhein.*\n"
+            "👇 **Send Start and End time in seconds.**\n"
             "Example:\n"
-            "• `0 30` (Pehle 30 second)\n"
-            "• `60 120` (1 min se 2 min tak)\n"
-            "• `0 0` (Cancel/Reset)"
+            "• `0 30` (First 30s)\n"
+            "• `60 120` (From 1m to 2m)\n"
+            "• `0 0` (Cancel Trim)"
         )
-        await query.edit_message_text(msg, parse_mode='Markdown')
+        await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN)
         
     elif data.startswith("set_fmt_"):
         session['format'] = data.split("_")[2]
@@ -370,7 +390,7 @@ async def process_audio_thread(query, context):
     user_id = query.from_user.id
     session = user_sessions.get(user_id)
     
-    await query.edit_message_text("⚙️ Processing... Please wait!")
+    await query.edit_message_text("⚙️ **Processing...**\nThis may take a moment.")
     
     try:
         output_path, thumb_path, caption = await asyncio.to_thread(run_ffmpeg_command, session)
@@ -381,22 +401,24 @@ async def process_audio_thread(query, context):
                 caption=caption, 
                 thumbnail=open(thumb_path, 'rb'), 
                 title=os.path.splitext(session['original_name'])[0], 
-                performer="ConvertedByBot"
+                performer="AudioStudioBot",
+                parse_mode=ParseMode.MARKDOWN
             )
         else:
             await query.message.reply_document(
                 document=open(output_path, 'rb'), 
-                caption=caption
+                caption=caption,
+                parse_mode=ParseMode.MARKDOWN
             )
             
-        await query.edit_message_text("✅ Conversion Successful!")
+        await query.edit_message_text("✅ **Done!**")
         
         cleanup_files(output_path, thumb_path, session['input_file'])
         del user_sessions[user_id]
         
     except Exception as e:
         logger.error(f"Processing Error: {e}")
-        await query.edit_message_text(f"❌ Error happened: {str(e)}")
+        await query.edit_message_text(f"❌ **Processing Failed.**\nError: {str(e)}")
         cleanup_files(session.get('input_file'))
 
 def run_ffmpeg_command(session):
@@ -439,17 +461,15 @@ def run_ffmpeg_command(session):
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     
     if result.returncode != 0:
+        # Fallback simple conversion if complex filters fail
         simple_cmd = ["ffmpeg", "-i", input_path, "-vn"]
-        if session['trim_start'] > 0: simple_cmd.extend(["-ss", str(session['trim_start'])])
-        if session['trim_end']: simple_cmd.extend(["-to", str(session['trim_end'])])
-        if af_chain: simple_cmd.extend(["-filter:a", ",".join(af_chain)])
         simple_cmd.extend(["-b:a", f"{session['bitrate']}k", "-y", output_path])
         subprocess.run(simple_cmd, check=True)
 
     caption = (
-        f"✅ *Processed Successfully* \n"
-        f"📁 Format: {out_fmt.upper()}\n"
-        f"📉 Size Optimized: {'Yes' if session['bitrate']=='64' else 'No'}"
+        f"✅ **Conversion Complete**\n"
+        f"📁 Format: `{out_fmt.upper()}`\n"
+        f"📉 Bitrate: `{session['bitrate']}kbps`"
     )
     
     return output_path, thumb_path, caption
@@ -467,14 +487,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if start == 0 and end == 0:
                     user_sessions[user_id]['trim_start'] = 0
                     user_sessions[user_id]['trim_end'] = None
-                    await update.message.reply_text("🔄 Trim Cancelled (Full Audio).")
+                    await update.message.reply_text("🔄 **Trim Cancelled.**")
                 elif start >= end and end != 0:
-                     await update.message.reply_text("❌ Start time chota hona chahiye End time se.")
+                     await update.message.reply_text("❌ Start time must be less than End time.")
                      return
                 else:
                     user_sessions[user_id]['trim_start'] = start
                     user_sessions[user_id]['trim_end'] = end
-                    await update.message.reply_text(f"✅ Trim Set: {start}s to {end}s")
+                    await update.message.reply_text(f"✅ Trim Set: `{start}s` to `{end}s`", parse_mode=ParseMode.MARKDOWN)
             else:
                 raise ValueError("Not enough numbers")
                 
@@ -482,7 +502,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_main_menu(update.message)
             
         except ValueError:
-            await update.message.reply_text("❌ Invalid format.\nDo number bhejein jaise: `10 30`")
+            await update.message.reply_text("❌ **Invalid format.**\nSend two numbers like: `10 30`")
 
 def cleanup_files(*files):
     for f in files:
@@ -496,8 +516,9 @@ def main():
         return
     start_keep_alive()
     application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.AUDIO | filters.VIDEO | filters.Document.ALL, handle_file))
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(MessageHandler(filters.AUDIO | filters.VIDEO | filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.run_polling(allowed_updates=Update.ALL_TYPES)
