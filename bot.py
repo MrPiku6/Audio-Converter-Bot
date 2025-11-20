@@ -4,6 +4,7 @@ import asyncio
 import subprocess
 import time
 import re
+import requests
 from threading import Thread
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
@@ -20,66 +21,94 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
+def self_ping():
+    """Khud ko ping karega taaki bot sleep na kare"""
+    while True:
+        try:
+            port = os.environ.get("PORT", 8080)
+            # Render URL mil jaye to best hai, nahi to localhost
+            render_url = os.environ.get("RENDER_EXTERNAL_URL") 
+            if render_url:
+                requests.get(render_url)
+                logger.info(f"Pinged self at {render_url}")
+            else:
+                requests.get(f"http://127.0.0.1:{port}")
+                logger.info("Pinged localhost")
+        except Exception as e:
+            logger.error(f"Ping Error: {e}")
+        time.sleep(600) # Har 10 minute mein ping
+
 def start_keep_alive():
-    t = Thread(target=run_flask)
-    t.daemon = True
-    t.start()
+    # Flask Server Thread
+    t1 = Thread(target=run_flask)
+    t1.daemon = True
+    t1.start()
+    
+    # Self Ping Thread
+    t2 = Thread(target=self_ping)
+    t2.daemon = True
+    t2.start()
 
 # --- CONFIGURATION ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+# Force Sub Variable
 FORCE_SUB_CHANNEL = os.getenv("@DARK_RIFT_ZONE") 
 
 TEMP_DIR = "temp_audio"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# Supported formats
 AUDIO_FORMATS = {'mp3': 'MP3', 'm4a': 'M4A', 'wav': 'WAV', 'ogg': 'OGG', 'flac': 'FLAC', 'aac': 'AAC'}
 BITRATES = {'64': '64k', '128': '128k', '192': '192k', '256': '256k', '320': '320k'}
 
-# User sessions store
 user_sessions = {}
 
 # --- HELPER FUNCTIONS ---
 
 async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check if user is subscribed to the channel"""
-    # Agar Environment variable set nahi hai ya empty hai, to check skip karo
     if not FORCE_SUB_CHANNEL or FORCE_SUB_CHANNEL.strip() == "":
+        # Agar channel set nahi hai to allow karo
         return True
     
     user_id = update.effective_user.id
     chat_id = FORCE_SUB_CHANNEL if FORCE_SUB_CHANNEL.startswith("@") else f"@{FORCE_SUB_CHANNEL}"
 
     try:
-        # Bot must be admin in the channel to check this
         member = await context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
         if member.status in [ChatMember.LEFT, ChatMember.BANNED]:
             return False
         return True
     except Exception as e:
-        logger.error(f"Channel check error: {e}")
-        # Agar bot admin nahi hai ya channel galat hai, to error aayega.
-        # Filhal user ko allow kar rahe hain taaki bot stuck na ho.
-        # Agar strict chahiye to 'return False' karein.
-        return True
+        logger.error(f"Force Sub Error: {e}")
+        # IMPORTANT: Agar bot admin nahi hai to error aayega.
+        # Agar aap chahte hain user bina join kiye use na kare, to return False karein.
+        if "Chat not found" in str(e) or "bot is not a member" in str(e):
+            await context.bot.send_message(chat_id=user_id, text="❌ **Error:** Bot channel ka Admin nahi hai.\nAdmin ko boliye mujhe channel me add karein aur Admin banayein.")
+            return False
+        return False # Strict Mode: Error aaya to bhi block karo
 
 async def send_force_sub_message(update: Update):
-    """Send message to join channel"""
     channel_name = FORCE_SUB_CHANNEL.replace('@', '')
+    # Universal Link format
+    join_link = f"https://t.me/{channel_name}"
+    
     keyboard = [
-        [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{channel_name}")],
+        [InlineKeyboardButton("📢 Join Channel", url=join_link)],
         [InlineKeyboardButton("✅ I have Joined", callback_data="check_sub")]
     ]
-    msg = f"🔒 *Locked!*\n\nBot use karne ke liye hamara channel join karein: {FORCE_SUB_CHANNEL}"
+    msg = f"🔒 *Access Denied!*\n\nBot use karne ke liye hamara channel join karein: @{channel_name}\nJoin karke 'I have Joined' par click karein."
     
     if update.message:
         await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
     elif update.callback_query:
-        # Agar purana message edit kar sakte hain
-        await update.callback_query.edit_message_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+        # Try editing, if fails, send new
+        try:
+            await update.callback_query.edit_message_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+        except:
+             await update.callback_query.message.reply_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
 def get_duration(file_path):
     try:
@@ -154,7 +183,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         return
     
-    if file_obj.file_size > 100 * 1024 * 1024: # 100MB Limit
+    if file_obj.file_size > 100 * 1024 * 1024: 
         await message.reply_text("❌ File too large! Max 100MB allowed.")
         return
 
@@ -242,7 +271,6 @@ async def show_main_menu(message):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Agar message edit ho sakta hai to edit karo, nahi to naya bhejo
     if hasattr(message, 'edit_text'):
         try:
             await message.edit_text(text, parse_mode='Markdown', reply_markup=reply_markup)
@@ -253,17 +281,21 @@ async def show_main_menu(message):
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    data = query.data
     
-    if data == "check_sub":
-        if await check_subscription(update, context):
-            await query.edit_message_text("✅ Verified! Ab aap bot use kar sakte hain.\nFile bhejein!")
+    # Special handler for check_sub to avoid answering prematurely
+    if query.data == "check_sub":
+        is_sub = await check_subscription(update, context)
+        if is_sub:
+            await query.answer("✅ Verified! File bhejein.")
+            await query.edit_message_text("✅ *Verified!*\n\nAb aap bot use kar sakte hain. Koi bhi Audio/Video file bhejein!", parse_mode='Markdown')
         else:
             await query.answer("❌ Aapne abhi tak channel join nahi kiya!", show_alert=True)
         return
 
+    await query.answer()
+    user_id = query.from_user.id
+    data = query.data
+    
     if user_id not in user_sessions:
         await query.edit_message_text("❌ Session expired. Please upload file again.")
         return
@@ -447,8 +479,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise ValueError("Not enough numbers")
                 
             user_sessions[user_id]['waiting_for_trim'] = False
-            
-            # THIS FIXES THE ISSUE: Showing the menu again after text input
             await show_main_menu(update.message)
             
         except ValueError:
