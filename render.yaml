@@ -9,6 +9,6 @@ services:
       - key: PORT
         value: 8080
       - key: FORCE_SUB_CHANNEL
-        value: "@your_channel_username" 
+        value: "@DARK_RIFT_ZONE" 
         # Yahan apne channel ka username likho (e.g. @MoviesHub)
         # Note: Bot ko is channel ka ADMIN banana zaroori hai!
